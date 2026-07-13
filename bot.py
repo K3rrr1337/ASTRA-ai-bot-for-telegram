@@ -37,7 +37,7 @@ async def search_wikipedia(query: str) -> str:
     try:
         url = f"https://ru.wikipedia.org/api/rest_v1/page/summary/{quote_plus(query)}"
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(url, timeout=10) as response:
                 if response.status == 200:
                     data = await response.json()
                     if data.get("extract"):
@@ -45,15 +45,15 @@ async def search_wikipedia(query: str) -> str:
                         if len(data['extract']) > 500:
                             text += "..."
                         return f"📚 *Википедия:*\n{text}\n🔗 {data.get('content_urls', {}).get('desktop', {}).get('page', '')}"
-    except:
-        pass
+    except Exception as e:
+        print(f"Wikipedia error: {e}")
     return None
 
 async def search_duckduckgo(query: str) -> str:
     try:
         url = f"https://api.duckduckgo.com/?q={quote_plus(query)}&format=json&no_html=1&skip_disambig=1"
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(url, timeout=10) as response:
                 data = await response.json()
                 if data.get("AbstractText"):
                     text = data['AbstractText'][:500]
@@ -70,8 +70,8 @@ async def search_duckduckgo(query: str) -> str:
                             results.append(f"• {text}")
                     if results:
                         return f"🦆 *DuckDuckGo:*\n" + "\n".join(results)
-    except:
-        pass
+    except Exception as e:
+        print(f"DuckDuckGo error: {e}")
     return None
 
 async def search_all_sources(query: str) -> str:
@@ -292,8 +292,6 @@ async def handle_webhook(request):
         return web.Response(text="Error", status=500)
 
 async def run_webhook():
-    global application
-    
     app = web.Application()
     app.router.add_get('/', health_check)
     app.router.add_get('/health', health_check)
