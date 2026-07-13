@@ -1,37 +1,33 @@
 import os
-import asyncio
-import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, 
     CommandHandler, 
     MessageHandler, 
-    CallbackQueryHandler,  # <- ЭТОТ ИМПОРТ БЫЛ ПРОПУЩЕН!
+    CallbackQueryHandler,
     filters, 
     ContextTypes
 )
 from openai import OpenAI
 
-# --- Конфигурация из переменных окружения (Railway) ---
+# --- Конфигурация ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
-    raise ValueError("Ошибка: переменные TELEGRAM_BOT_TOKEN и DEEPSEEK_API_KEY должны быть установлены!")
+if not TELEGRAM_TOKEN or not OPENROUTER_API_KEY:
+    raise ValueError("Ошибка: переменные TELEGRAM_BOT_TOKEN и OPENROUTER_API_KEY должны быть установлены!")
 
-# --- Инициализация клиента DeepSeek ---
-deepseek_client = OpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com/v1"  # Стандартный endpoint
+# --- Инициализация клиента OpenRouter ---
+client = OpenAI(
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
 )
 
 # --- Хранилище истории диалогов ---
 user_histories = {}
 
-# --- Функция запроса к DeepSeek ---
-async def ask_deepseek(user_id: int, user_message: str) -> str:
-    """Отправляет запрос к DeepSeek с контекстом истории."""
-    
+# --- Функция запроса к ИИ ---
+async def ask_ai(user_id: int, user_message: str) -> str:
     if user_id not in user_histories:
         user_histories[user_id] = [
             {"role": "system", "content": "Ты — полезный и дружелюбный ИИ-помощник. Отвечай кратко и по делу."}
@@ -39,13 +35,12 @@ async def ask_deepseek(user_id: int, user_message: str) -> str:
     
     user_histories[user_id].append({"role": "user", "content": user_message})
     
-    # Ограничиваем историю до 10 последних сообщений
     if len(user_histories[user_id]) > 11:
         user_histories[user_id] = [user_histories[user_id][0]] + user_histories[user_id][-10:]
     
     try:
-        response = deepseek_client.chat.completions.create(
-            model="deepseek-chat",
+        response = client.chat.completions.create(
+            model="google/gemini-2.0-flash-exp:free",
             messages=user_histories[user_id],
             temperature=0.7,
             max_tokens=2000
@@ -53,21 +48,16 @@ async def ask_deepseek(user_id: int, user_message: str) -> str:
         answer = response.choices[0].message.content
         user_histories[user_id].append({"role": "assistant", "content": answer})
         return answer
-        
     except Exception as e:
-        print(f"Ошибка DeepSeek API: {e}")
+        print(f"Ошибка API: {e}")
         return f"❌ Извините, произошла ошибка: {str(e)}"
 
 # --- Обработчики команд ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start."""
-    keyboard = [
-        [InlineKeyboardButton("🔍 Поиск в интернете", callback_data="search")],
-        [InlineKeyboardButton("❓ Помощь", callback_data="help")]
-    ]
+    keyboard = [[InlineKeyboardButton("❓ Помощь", callback_data="help")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🤖 *Привет! Я — ИИ-помощник на базе DeepSeek!*\n\n"
+        "🤖 *Привет! Я — ИИ-помощник на базе OpenRouter!*\n\n"
         "✅ Отвечаю на любые вопросы\n"
         "✅ Помогаю решать проблемы\n"
         "✅ Помню контекст диалога\n\n"
@@ -77,7 +67,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /help."""
     await update.message.reply_text(
         "📖 *Доступные команды:*\n"
         "/start - Начать диалог\n"
@@ -88,24 +77,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /clear для очистки истории."""
     user_id = update.effective_user.id
     if user_id in user_histories:
         del user_histories[user_id]
     await update.message.reply_text("🧹 История диалога для вас очищена!")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик всех текстовых сообщений."""
     user_id = update.effective_user.id
     user_text = update.message.text
     
-    # Показываем статус "печатает..."
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    reply = await ask_ai(user_id, user_text)
     
-    # Получаем ответ от DeepSeek
-    reply = await ask_deepseek(user_id, user_text)
-    
-    # Отправляем ответ, разбивая, если он слишком длинный
     if len(reply) > 4000:
         for i in range(0, len(reply), 4000):
             await update.message.reply_text(reply[i:i+4000])
@@ -113,10 +96,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на кнопки."""
     query = update.callback_query
     await query.answer()
-    
     if query.data == "help":
         await query.edit_message_text(
             "📖 *Помощь:*\n"
@@ -127,28 +108,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/help - Эта справка",
             parse_mode="Markdown"
         )
-    elif query.data == "search":
-        await query.edit_message_text(
-            "🔍 *Поиск в интернете*\n\n"
-            "DeepSeek API пока не поддерживает поиск через стандартный endpoint.\n"
-            "Но я могу ответить на твой вопрос на основе моих знаний!",
-            parse_mode="Markdown"
-        )
 
-# --- Основная функция запуска ---
+# --- Основная функция ---
 def main():
-    """Запуск бота с использованием long polling."""
-    print("🚀 Запуск бота...")
+    print("🚀 Запуск бота на OpenRouter...")
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
-    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("clear", clear_history))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    # Запуск поллинга
     print("✅ Бот запущен и слушает сообщения...")
     application.run_polling()
 
