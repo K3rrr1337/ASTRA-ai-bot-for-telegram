@@ -1,9 +1,7 @@
 import os
 import asyncio
-import json
 import aiohttp
 from urllib.parse import quote_plus
-from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, 
@@ -13,11 +11,9 @@ from telegram.ext import (
     filters, 
     ContextTypes
 )
-from aiohttp import web
 
 # --- Конфигурация ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-PORT = int(os.environ.get("PORT", 8080))
 
 if not TELEGRAM_TOKEN:
     raise ValueError("Ошибка: переменная TELEGRAM_BOT_TOKEN должна быть установлена!")
@@ -78,21 +74,17 @@ async def search_all_sources(query: str) -> str:
     """Сбор информации из всех источников"""
     results = []
     
-    # Ищем в Википедии
     wiki_result = await search_wikipedia(query)
     if wiki_result:
         results.append(wiki_result)
     
-    # Ищем в DuckDuckGo
     ddg_result = await search_duckduckgo(query)
     if ddg_result:
         results.append(ddg_result)
     
-    # Если ничего не найдено
     if not results:
         return "❌ Ничего не найдено по вашему запросу. Попробуйте переформулировать вопрос."
     
-    # Объединяем результаты
     full_response = "🔍 *Результаты поиска:*\n\n"
     for result in results:
         full_response += result + "\n\n"
@@ -106,18 +98,14 @@ async def search_all_sources(query: str) -> str:
 def should_respond(update: Update) -> bool:
     """Проверяет, должен ли бот отвечать на сообщение"""
     
-    # Если это личное сообщение - отвечаем всегда
     if update.effective_chat.type == "private":
         return True
     
-    # Если это группа или канал
     if update.effective_chat.type in ["group", "supergroup"]:
         
-        # Проверяем, является ли сообщение командой /search
         if update.message and update.message.text and update.message.text.startswith("/search"):
             return True
         
-        # Проверяем, упомянули ли бота (@имя_бота)
         if update.message and update.message.entities:
             for entity in update.message.entities:
                 if entity.type == "mention":
@@ -126,15 +114,12 @@ def should_respond(update: Update) -> bool:
                     if mention_text.lower() == f"@{bot_username.lower()}":
                         return True
         
-        # Проверяем, ответили ли на сообщение бота (reply)
         if update.message and update.message.reply_to_message:
             if update.message.reply_to_message.from_user.id == update.get_bot().id:
                 return True
         
-        # В группах на обычные сообщения не отвечаем
         return False
     
-    # По умолчанию не отвечаем
     return False
 
 def extract_query(update: Update) -> str:
@@ -144,14 +129,12 @@ def extract_query(update: Update) -> str:
     
     text = update.message.text
     
-    # Если это команда /search
     if text.startswith("/search"):
         query = text.replace("/search", "").strip()
         if query:
             return query
         return None
     
-    # Если есть упоминание бота (@имя_бота) - убираем его
     if update.message.entities:
         for entity in update.message.entities:
             if entity.type == "mention":
@@ -162,7 +145,7 @@ def extract_query(update: Update) -> str:
     return text.strip() if text.strip() else None
 
 # ============================================
-# 3. КОМАНДЫ И ОБРАБОТЧИКИ
+# 3. КОМАНДЫ
 # ============================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,7 +185,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /search - расширенный поиск"""
     query = " ".join(context.args)
     if not query:
         await update.message.reply_text(
@@ -258,8 +240,6 @@ async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик всех текстовых сообщений"""
-    
     if not should_respond(update):
         return
     
@@ -293,9 +273,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    data = query.data
-    
-    if data == "help":
+    if query.data == "help":
         await query.edit_message_text(
             "📖 *Помощь:*\n\n"
             "🤖 *Что я умею:*\n"
@@ -314,7 +292,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
     
-    elif data == "search":
+    elif query.data == "search":
         await query.edit_message_text(
             "🔍 *Поиск в интернете:*\n\n"
             "📌 *Способы:*\n\n"
@@ -332,37 +310,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ============================================
-# 4. HTTP-СЕРВЕР ДЛЯ RAILWAY
+# 4. ЗАПУСК
 # ============================================
 
-async def health_check(request):
-    """Проверка здоровья для Railway"""
-    return web.Response(text="Бот работает!")
-
-async def run_http_server():
-    """Запуск HTTP сервера"""
-    app = web.Application()
-    app.router.add_get('/', health_check)
-    app.router.add_get('/health', health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host='0.0.0.0', port=PORT)
-    await site.start()
-    print(f"🌐 HTTP сервер запущен на порту {PORT}")
-    # Держим сервер запущенным
-    await asyncio.Event().wait()
-
-# ============================================
-# 5. ЗАПУСК БОТА
-# ============================================
-
-async def run_bot():
-    """Запуск бота"""
-    print("🚀 Запуск бота с поиском...")
+def main():
+    print("🚀 Запуск бота...")
     print("📚 Источники: Википедия, DuckDuckGo")
-    print("💬 Команды: /start, /help, /search, /clear")
-    print("👥 Режим групп: отвечает только на /search, упоминания и reply")
-    print(f"🌐 Порт: {PORT}")
+    print("👥 Режим групп: /search, @имя_бота, reply")
     
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
@@ -374,23 +328,7 @@ async def run_bot():
     application.add_handler(CallbackQueryHandler(button_callback))
     
     print("✅ Бот готов к работе!")
-    print("💡 Тестируй бота в Telegram!")
-    
-    # Запускаем бота с webhook или polling
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-    
-    # Держим бота запущенным
-    await asyncio.Event().wait()
-
-async def main():
-    """Главная функция"""
-    # Запускаем HTTP сервер и бота параллельно
-    await asyncio.gather(
-        run_http_server(),
-        run_bot()
-    )
+    application.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
