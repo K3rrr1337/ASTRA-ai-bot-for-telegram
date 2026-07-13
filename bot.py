@@ -40,10 +40,14 @@ async def ask_ai(user_id: int, user_message: str) -> str:
     
     try:
         response = client.chat.completions.create(
-            model="google/gemini-2.0-flash-exp:free",
+            model="mistralai/mistral-7b-instruct:free",  # Рабочая бесплатная модель
             messages=user_histories[user_id],
             temperature=0.7,
-            max_tokens=2000
+            max_tokens=2000,
+            extra_headers={
+                "HTTP-Referer": "https://t.me/your_bot",  # Замени на свой
+                "X-Title": "Astra AI Bot"
+            }
         )
         answer = response.choices[0].message.content
         user_histories[user_id].append({"role": "assistant", "content": answer})
