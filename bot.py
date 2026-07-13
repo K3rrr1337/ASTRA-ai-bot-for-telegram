@@ -11,12 +11,19 @@ from telegram.ext import (
     filters, 
     ContextTypes
 )
+from aiohttp import web
 
 # --- Конфигурация ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+PORT = int(os.environ.get("PORT", 8080))
+WEBHOOK_URL = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("Ошибка: переменная TELEGRAM_BOT_TOKEN должна быть установлена!")
+
+if not WEBHOOK_URL:
+    print("⚠️ Внимание: WEBHOOK_URL не установлен, использую polling")
+    WEBHOOK_URL = None
 
 # --- Хранилище истории диалогов ---
 user_histories = {}
@@ -310,10 +317,31 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ============================================
-# 4. ЗАПУСК
+# 4. HTTP-СЕРВЕР
 # ============================================
 
-def main():
+async def health_check(request):
+    """Проверка здоровья для Railway"""
+    return web.Response(text="Бот работает! ✅")
+
+async def handle_webhook(request):
+    """Обработка вебхука от Telegram"""
+    try:
+        data = await request.json()
+        update = Update.de_json(data, None)
+        await application.process_update(update)
+        return web.Response(text="OK")
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return web.Response(text="Error", status=500)
+
+# ============================================
+# 5. ЗАПУСК
+# ============================================
+
+async def main():
+    global application
+    
     print("🚀 Запуск бота...")
     print("📚 Источники: Википедия, DuckDuckGo")
     print("👥 Режим групп: /search, @имя_бота, reply")
@@ -327,8 +355,38 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    print("✅ Бот готов к работе!")
-    application.run_polling()
+    # Если есть WEBHOOK_URL - используем вебхук
+    if WEBHOOK_URL:
+        print(f"🔗 Настройка вебхука: {WEBHOOK_URL}/webhook")
+        await application.initialize()
+        await application.start()
+        await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+        
+        # Запускаем HTTP сервер
+        app = web.Application()
+        app.router.add_get('/', health_check)
+        app.router.add_get('/health', health_check)
+        app.router.add_post('/webhook', handle_webhook)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, host='0.0.0.0', port=PORT)
+        await site.start()
+        
+        print(f"🌐 HTTP сервер запущен на порту {PORT}")
+        print("✅ Бот работает через webhook!")
+        
+        # Держим сервер запущенным
+        await asyncio.Event().wait()
+    else:
+        # Используем polling
+        print("📡 Запуск через polling...")
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        
+        print("✅ Бот готов к работе!")
+        await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
