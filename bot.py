@@ -24,7 +24,7 @@ if not TELEGRAM_TOKEN:
 user_histories = {}
 
 # ============================================
-# 1. ПОИСК В ИНТЕРНЕТЕ (МНОЖЕСТВО ИСТОЧНИКОВ)
+# 1. ПОИСК В ИНТЕРНЕТЕ
 # ============================================
 
 async def search_wikipedia(query: str) -> str:
@@ -36,7 +36,10 @@ async def search_wikipedia(query: str) -> str:
                 if response.status == 200:
                     data = await response.json()
                     if data.get("extract"):
-                        return f"📚 *Википедия:*\n{data['extract'][:500]}...\n🔗 {data.get('content_urls', {}).get('desktop', {}).get('page', '')}"
+                        text = data['extract'][:500]
+                        if len(data['extract']) > 500:
+                            text += "..."
+                        return f"📚 *Википедия:*\n{text}\n🔗 {data.get('content_urls', {}).get('desktop', {}).get('page', '')}"
     except:
         pass
     return None
@@ -50,52 +53,21 @@ async def search_duckduckgo(query: str) -> str:
                 data = await response.json()
                 
                 if data.get("AbstractText"):
-                    return f"🦆 *DuckDuckGo:*\n{data['AbstractText'][:500]}...\n🔗 {data.get('AbstractURL', '')}"
+                    text = data['AbstractText'][:500]
+                    if len(data['AbstractText']) > 500:
+                        text += "..."
+                    return f"🦆 *DuckDuckGo:*\n{text}\n🔗 {data.get('AbstractURL', '')}"
                 
                 if data.get("RelatedTopics"):
                     results = []
                     for topic in data["RelatedTopics"][:3]:
                         if "Text" in topic:
-                            results.append(f"• {topic['Text'][:200]}")
+                            text = topic['Text'][:200]
+                            if len(topic['Text']) > 200:
+                                text += "..."
+                            results.append(f"• {text}")
                     if results:
                         return f"🦆 *DuckDuckGo:*\n" + "\n".join(results)
-    except:
-        pass
-    return None
-
-async def search_news(query: str) -> str:
-    """Поиск новостей (через NewsAPI)"""
-    try:
-        # Используем бесплатный прокси для новостей
-        url = f"https://newsapi.org/v2/everything?q={quote_plus(query)}&language=ru&pageSize=3&apiKey=YOUR_NEWS_API_KEY"
-        # Если нет NewsAPI ключа, используем альтернативный источник
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("articles"):
-                        articles = data["articles"][:3]
-                        result = "📰 *Новости:*\n"
-                        for i, article in enumerate(articles, 1):
-                            result += f"{i}. {article['title']}\n"
-                            if article.get('description'):
-                                result += f"   {article['description'][:150]}...\n"
-                            result += f"   🔗 {article['url']}\n\n"
-                        return result
-    except:
-        pass
-    return None
-
-async def search_google(query: str) -> str:
-    """Поиск через Google (альтернативный метод)"""
-    try:
-        # Используем бесплатный прокси для Google
-        url = f"https://api.duckduckgo.com/?q={quote_plus(query)}&format=json&no_html=1&skip_disambig=1"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                data = await response.json()
-                if data.get("AbstractText"):
-                    return f"🔍 *Google/DDG:*\n{data['AbstractText'][:500]}...\n🔗 {data.get('AbstractURL', '')}"
     except:
         pass
     return None
@@ -114,11 +86,6 @@ async def search_all_sources(query: str) -> str:
     if ddg_result:
         results.append(ddg_result)
     
-    # Ищем новости
-    news_result = await search_news(query)
-    if news_result:
-        results.append(news_result)
-    
     # Если ничего не найдено
     if not results:
         return "❌ Ничего не найдено по вашему запросу. Попробуйте переформулировать вопрос."
@@ -131,27 +98,75 @@ async def search_all_sources(query: str) -> str:
     return full_response
 
 # ============================================
-# 2. ФОРМАТИРОВАНИЕ ОТВЕТОВ
+# 2. ПРОВЕРКА: НУЖНО ЛИ ОТВЕЧАТЬ
 # ============================================
 
-async def format_response(raw_text: str) -> str:
-    """Форматирование ответа для красивого отображения"""
-    # Добавляем заголовки и структуру
-    lines = raw_text.split('\n')
-    formatted = []
+def should_respond(update: Update) -> bool:
+    """Проверяет, должен ли бот отвечать на сообщение"""
     
-    for line in lines:
-        if line.strip():
-            # Проверяем, является ли строка вопросом
-            if line.endswith('?'):
-                formatted.append(f"🤔 *{line.strip()}*")
-            # Проверяем, является ли строка заголовком
-            elif len(line.strip()) < 60 and line.strip().upper() == line.strip():
-                formatted.append(f"📌 *{line.strip()}*")
-            else:
-                formatted.append(f"• {line.strip()}")
+    # Если это личное сообщение - отвечаем всегда
+    if update.effective_chat.type == "private":
+        return True
     
-    return "\n".join(formatted)
+    # Если это группа или канал
+    if update.effective_chat.type in ["group", "supergroup"]:
+        
+        # Проверяем, является ли сообщение командой /search
+        if update.message and update.message.text and update.message.text.startswith("/search"):
+            return True
+        
+        # Проверяем, упомянули ли бота (@имя_бота)
+        if update.message and update.message.entities:
+            for entity in update.message.entities:
+                if entity.type == "mention":
+                    # Проверяем, упомянули ли именно этого бота
+                    mention_text = update.message.text[entity.offset:entity.offset + entity.length]
+                    bot_username = update.get_bot().username
+                    if mention_text.lower() == f"@{bot_username.lower()}":
+                        return True
+        
+        # Проверяем, ответили ли на сообщение бота (reply)
+        if update.message and update.message.reply_to_message:
+            if update.message.reply_to_message.from_user.id == update.get_bot().id:
+                return True
+        
+        # В группах на обычные сообщения не отвечаем
+        return False
+    
+    # По умолчанию не отвечаем
+    return False
+
+def extract_query(update: Update) -> str:
+    """Извлекает текст запроса из сообщения"""
+    if not update.message or not update.message.text:
+        return None
+    
+    text = update.message.text
+    
+    # Если это команда /search
+    if text.startswith("/search"):
+        # Убираем команду /search и пробелы
+        query = text.replace("/search", "").strip()
+        if query:
+            return query
+        return None
+    
+    # Если есть упоминание бота (@имя_бота) - убираем его
+    if update.message.entities:
+        for entity in update.message.entities:
+            if entity.type == "mention":
+                # Убираем упоминание из текста
+                text = text[:entity.offset] + text[entity.offset + entity.length:]
+                text = text.strip()
+                break
+    
+    # Если есть reply к боту - убираем reply
+    if update.message.reply_to_message:
+        if update.message.reply_to_message.from_user.id == update.get_bot().id:
+            # Текст без reply
+            pass
+    
+    return text.strip() if text.strip() else None
 
 # ============================================
 # 3. КОМАНДЫ И ОБРАБОТЧИКИ
@@ -160,27 +175,39 @@ async def format_response(raw_text: str) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🔍 Поиск", callback_data="search")],
-        [InlineKeyboardButton("📰 Новости", callback_data="news")],
         [InlineKeyboardButton("❓ Помощь", callback_data="help")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "🤖 *Привет! Я — умный ИИ-помощник с доступом в интернет!*\n\n"
-        "✅ Отвечаю на любые вопросы\n"
-        "✅ Ищу в Википедии, DuckDuckGo и новостях\n"
-        "✅ Даю развернутые ответы\n"
-        "✅ Помню контекст диалога\n\n"
-        "🔍 *Как использовать:*\n"
-        "• Просто напиши вопрос\n"
-        "• Используй /search [вопрос]\n"
-        "• Нажми кнопку 📰 для новостей\n\n"
-        "📌 *Примеры:*\n"
-        "• 'Кто такой Эйнштейн?'\n"
-        "• 'Что такое ИИ?'\n"
-        "• 'Последние новости технологий'",
-        parse_mode="Markdown",
-        reply_markup=reply_markup
-    )
+    
+    # Приветствие для групп и личных чатов
+    if update.effective_chat.type == "private":
+        await update.message.reply_text(
+            "🤖 *Привет! Я — умный ИИ-помощник с доступом в интернет!*\n\n"
+            "✅ Отвечаю на любые вопросы\n"
+            "✅ Ищу в Википедии и DuckDuckGo\n"
+            "✅ Даю развернутые ответы\n"
+            "✅ Помню контекст диалога\n\n"
+            "🔍 *Как использовать:*\n"
+            "• Просто напиши вопрос\n"
+            "• Используй /search [вопрос]\n\n"
+            "📌 *Примеры:*\n"
+            "• 'Кто такой Эйнштейн?'\n"
+            "• 'Что такое ИИ?'",
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            "🤖 *Привет! Я — ИИ-помощник для групп!*\n\n"
+            "🔍 *Как со мной общаться:*\n"
+            "• Напиши `/search [вопрос]`\n"
+            "• Или упомяни меня: `@имя_бота [вопрос]`\n"
+            "• Или ответь на моё сообщение\n\n"
+            "📌 *Примеры:*\n"
+            "`/search кто такой Эйнштейн`\n"
+            "`@имя_бота что такое ИИ?`",
+            parse_mode="Markdown"
+        )
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /search - расширенный поиск"""
@@ -199,53 +226,21 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
     # Ищем во всех источниках
-    raw_result = await search_all_sources(query)
-    formatted_result = await format_response(raw_result)
+    result = await search_all_sources(query)
     
     # Сохраняем в историю
     user_id = update.effective_user.id
     if user_id not in user_histories:
         user_histories[user_id] = []
     user_histories[user_id].append({"role": "user", "content": query})
-    user_histories[user_id].append({"role": "assistant", "content": raw_result})
+    user_histories[user_id].append({"role": "assistant", "content": result})
     
-    # Отправляем результат с кнопками
-    keyboard = [
-        [InlineKeyboardButton("🔄 Обновить", callback_data=f"refresh_{query}")],
-        [InlineKeyboardButton("🔍 Другие источники", callback_data=f"more_{query}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    if len(formatted_result) > 4000:
-        for i in range(0, len(formatted_result), 4000):
-            await update.message.reply_text(
-                formatted_result[i:i+4000], 
-                parse_mode="Markdown",
-                reply_markup=reply_markup if i == 0 else None
-            )
+    # Отправляем результат
+    if len(result) > 4000:
+        for i in range(0, len(result), 4000):
+            await update.message.reply_text(result[i:i+4000], parse_mode="Markdown")
     else:
-        await update.message.reply_text(
-            formatted_result, 
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
-
-async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /news - последние новости"""
-    query = " ".join(context.args) if context.args else "технологии"
-    
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    
-    result = await search_news(query)
-    if result:
         await update.message.reply_text(result, parse_mode="Markdown")
-    else:
-        await update.message.reply_text(
-            "📰 *Новости по запросу:*\n"
-            f"`{query}`\n\n"
-            "❌ Не удалось найти свежие новости. Попробуйте другой запрос.",
-            parse_mode="Markdown"
-        )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -253,15 +248,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - Начать диалог\n"
         "/help - Показать эту справку\n"
         "/clear - Очистить историю диалога\n"
-        "/search [вопрос] - Поиск в интернете (Википедия + DuckDuckGo)\n"
-        "/news [тема] - Последние новости\n\n"
+        "/search [вопрос] - Поиск в интернете (Википедия + DuckDuckGo)\n\n"
         "🔍 *Быстрый поиск:*\n"
-        "• Просто напиши вопрос в чат\n"
-        "• Я сам найду ответ\n\n"
+        "• В личных сообщениях: просто напиши вопрос\n"
+        "• В группах: используй /search или упомяни меня\n\n"
         "📌 *Примеры запросов:*\n"
         "• 'Кто написал Войну и мир?'\n"
         "• 'Что такое квантовая физика?'\n"
-        "• 'Новости космоса'\n"
         "• 'Как работает ChatGPT?'",
         parse_mode="Markdown"
     )
@@ -278,28 +271,42 @@ async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик всех текстовых сообщений"""
-    user_id = update.effective_user.id
-    user_text = update.message.text
+    
+    # Проверяем, должен ли бот отвечать
+    if not should_respond(update):
+        # Не отвечаем в группах на обычные сообщения
+        return
+    
+    # Извлекаем текст запроса
+    query = extract_query(update)
+    if not query:
+        if update.effective_chat.type != "private":
+            await update.message.reply_text(
+                "ℹ️ Напишите вопрос после команды или упоминания.\n"
+                "Пример: `/search ваш вопрос`",
+                parse_mode="Markdown"
+            )
+        return
     
     # Показываем статус "печатает..."
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
     # Ищем во всех источниках
-    raw_result = await search_all_sources(user_text)
-    formatted_result = await format_response(raw_result)
+    result = await search_all_sources(query)
     
     # Сохраняем в историю
+    user_id = update.effective_user.id
     if user_id not in user_histories:
         user_histories[user_id] = []
-    user_histories[user_id].append({"role": "user", "content": user_text})
-    user_histories[user_id].append({"role": "assistant", "content": raw_result})
+    user_histories[user_id].append({"role": "user", "content": query})
+    user_histories[user_id].append({"role": "assistant", "content": result})
     
     # Отправляем ответ
-    if len(formatted_result) > 4000:
-        for i in range(0, len(formatted_result), 4000):
-            await update.message.reply_text(formatted_result[i:i+4000], parse_mode="Markdown")
+    if len(result) > 4000:
+        for i in range(0, len(result), 4000):
+            await update.message.reply_text(result[i:i+4000], parse_mode="Markdown")
     else:
-        await update.message.reply_text(formatted_result, parse_mode="Markdown")
+        await update.message.reply_text(result, parse_mode="Markdown")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на кнопки"""
@@ -313,94 +320,51 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📖 *Помощь:*\n\n"
             "🤖 *Что я умею:*\n"
             "• Отвечать на любые вопросы\n"
-            "• Искать в Википедии, DuckDuckGo и новостях\n"
+            "• Искать в Википедии и DuckDuckGo\n"
             "• Давать развернутые ответы\n"
             "• Помнить контекст разговора\n\n"
             "📌 *Команды:*\n"
             "/start - Главное меню\n"
             "/search [вопрос] - Поиск\n"
-            "/news [тема] - Новости\n"
-            "/clear - Очистить историю",
+            "/clear - Очистить историю\n"
+            "/help - Справка\n\n"
+            "👥 *В группах:*\n"
+            "• Используй `/search [вопрос]`\n"
+            "• Или упомяни меня: `@имя_бота [вопрос]`",
             parse_mode="Markdown"
         )
     
     elif data == "search":
         await query.edit_message_text(
             "🔍 *Поиск в интернете:*\n\n"
-            "📌 *Способы:*\n"
-            "1. Команда: `/search ваш вопрос`\n"
-            "2. Просто напиши вопрос в чат\n"
-            "3. Нажми на кнопку 📰 для новостей\n\n"
+            "📌 *Способы:*\n\n"
+            "🔹 *В личных сообщениях:*\n"
+            "• Просто напиши вопрос\n"
+            "• Или используй `/search [вопрос]`\n\n"
+            "🔹 *В группах:*\n"
+            "• `/search ваш вопрос`\n"
+            "• `@имя_бота ваш вопрос`\n"
+            "• Ответь на моё сообщение\n\n"
             "📝 *Примеры:*\n"
             "• `кто такой Эйнштейн`\n"
             "• `что такое ИИ`\n"
             "• `история интернета`\n\n"
             "🌐 *Источники:*\n"
             "• Википедия\n"
-            "• DuckDuckGo\n"
-            "• Новостные ленты",
+            "• DuckDuckGo",
             parse_mode="Markdown"
         )
-    
-    elif data == "news":
-        await query.edit_message_text(
-            "📰 *Новости:*\n\n"
-            "Используй команду:\n"
-            "`/news [тема]`\n\n"
-            "📌 *Примеры:*\n"
-            "• `/news технологи`\n"
-            "• `/news наука`\n"
-            "• `/news спорт`\n\n"
-            "_Если не указать тему, покажу новости о технологиях._",
-            parse_mode="Markdown"
-        )
-    
-    elif data.startswith("refresh_"):
-        # Обновить поиск
-        search_query = data.replace("refresh_", "")
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-        result = await search_all_sources(search_query)
-        formatted_result = await format_response(result)
-        
-        await query.edit_message_text(
-            f"🔄 *Обновленный поиск:*\n\n{formatted_result}",
-            parse_mode="Markdown"
-        )
-    
-    elif data.startswith("more_"):
-        # Другие источники
-        search_query = data.replace("more_", "")
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-        
-        # Собираем информацию из разных источников
-        response = "🔍 *Другие источники:*\n\n"
-        
-        # Проверяем каждый источник отдельно
-        wiki = await search_wikipedia(search_query)
-        if wiki:
-            response += f"{wiki}\n\n"
-        
-        ddg = await search_duckduckgo(search_query)
-        if ddg:
-            response += f"{ddg}\n\n"
-        
-        news = await search_news(search_query)
-        if news:
-            response += f"{news}\n\n"
-        
-        if response == "🔍 *Другие источники:*\n\n":
-            response = "❌ Дополнительной информации не найдено."
-        
-        await query.edit_message_text(response, parse_mode="Markdown")
 
 # ============================================
 # 4. ЗАПУСК БОТА
 # ============================================
 
 def main():
-    print("🚀 Запуск бота с множественными источниками поиска...")
-    print("📚 Источники: Википедия, DuckDuckGo, Новости")
-    print("💬 Поддерживаются команды: /start, /help, /search, /news, /clear")
+    print("🚀 Запуск бота с поиском...")
+    print("📚 Источники: Википедия, DuckDuckGo")
+    print("💬 Команды: /start, /help, /search, /clear")
+    print("👥 Режим групп: отвечает только на /search, упоминания и reply")
+    print("✅ Бот запущен!")
     
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
@@ -408,18 +372,10 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("clear", clear_history))
     application.add_handler(CommandHandler("search", search_command))
-    application.add_handler(CommandHandler("news", news_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    print("✅ Бот успешно запущен и готов к работе!")
-    print("📊 Статистика:")
-    print(f"   • Токен бота: {TELEGRAM_TOKEN[:10]}...")
-    print("   • Модули: Википедия, DuckDuckGo, Новости")
-    print("   • Поддержка кнопок: Да")
-    print("   • История диалогов: Да\n")
     print("💡 Тестируй бота в Telegram!")
-    
     application.run_polling()
 
 if __name__ == "__main__":
