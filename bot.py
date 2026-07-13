@@ -13,19 +13,20 @@ from telegram.ext import (
 )
 from aiohttp import web
 
-# --- Конфигурация ---
+# --- КОНФИГУРАЦИЯ ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 PORT = int(os.environ.get("PORT", 8080))
 WEBHOOK_URL = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
 
 if not TELEGRAM_TOKEN:
-    raise ValueError("Ошибка: переменная TELEGRAM_BOT_TOKEN должна быть установлена!")
+    raise ValueError("Ошибка: TELEGRAM_BOT_TOKEN не установлен!")
 
 if not WEBHOOK_URL:
-    print("⚠️ Внимание: WEBHOOK_URL не установлен, использую polling")
-    WEBHOOK_URL = None
+    print("⚠️ ВНИМАНИЕ: RAILWAY_PUBLIC_DOMAIN не установлен. Использую polling (может быть нестабильно).")
+else:
+    print(f"🔗 Будет использован webhook: {WEBHOOK_URL}/webhook")
 
-# --- Хранилище истории диалогов ---
+# --- Хранилище истории ---
 user_histories = {}
 
 # ============================================
@@ -33,7 +34,6 @@ user_histories = {}
 # ============================================
 
 async def search_wikipedia(query: str) -> str:
-    """Поиск в Википедии"""
     try:
         url = f"https://ru.wikipedia.org/api/rest_v1/page/summary/{quote_plus(query)}"
         async with aiohttp.ClientSession() as session:
@@ -50,19 +50,16 @@ async def search_wikipedia(query: str) -> str:
     return None
 
 async def search_duckduckgo(query: str) -> str:
-    """Поиск через DuckDuckGo"""
     try:
         url = f"https://api.duckduckgo.com/?q={quote_plus(query)}&format=json&no_html=1&skip_disambig=1"
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 data = await response.json()
-                
                 if data.get("AbstractText"):
                     text = data['AbstractText'][:500]
                     if len(data['AbstractText']) > 500:
                         text += "..."
                     return f"🦆 *DuckDuckGo:*\n{text}\n🔗 {data.get('AbstractURL', '')}"
-                
                 if data.get("RelatedTopics"):
                     results = []
                     for topic in data["RelatedTopics"][:3]:
@@ -78,41 +75,27 @@ async def search_duckduckgo(query: str) -> str:
     return None
 
 async def search_all_sources(query: str) -> str:
-    """Сбор информации из всех источников"""
     results = []
-    
     wiki_result = await search_wikipedia(query)
     if wiki_result:
         results.append(wiki_result)
-    
     ddg_result = await search_duckduckgo(query)
     if ddg_result:
         results.append(ddg_result)
-    
     if not results:
-        return "❌ Ничего не найдено по вашему запросу. Попробуйте переформулировать вопрос."
-    
-    full_response = "🔍 *Результаты поиска:*\n\n"
-    for result in results:
-        full_response += result + "\n\n"
-    
-    return full_response
+        return "❌ Ничего не найдено. Попробуйте переформулировать вопрос."
+    return "🔍 *Результаты поиска:*\n\n" + "\n\n".join(results)
 
 # ============================================
 # 2. ПРОВЕРКА: НУЖНО ЛИ ОТВЕЧАТЬ
 # ============================================
 
 def should_respond(update: Update) -> bool:
-    """Проверяет, должен ли бот отвечать на сообщение"""
-    
     if update.effective_chat.type == "private":
         return True
-    
     if update.effective_chat.type in ["group", "supergroup"]:
-        
         if update.message and update.message.text and update.message.text.startswith("/search"):
             return True
-        
         if update.message and update.message.entities:
             for entity in update.message.entities:
                 if entity.type == "mention":
@@ -120,35 +103,25 @@ def should_respond(update: Update) -> bool:
                     bot_username = update.get_bot().username
                     if mention_text.lower() == f"@{bot_username.lower()}":
                         return True
-        
         if update.message and update.message.reply_to_message:
             if update.message.reply_to_message.from_user.id == update.get_bot().id:
                 return True
-        
         return False
-    
     return False
 
 def extract_query(update: Update) -> str:
-    """Извлекает текст запроса из сообщения"""
     if not update.message or not update.message.text:
         return None
-    
     text = update.message.text
-    
     if text.startswith("/search"):
         query = text.replace("/search", "").strip()
-        if query:
-            return query
-        return None
-    
+        return query if query else None
     if update.message.entities:
         for entity in update.message.entities:
             if entity.type == "mention":
                 text = text[:entity.offset] + text[entity.offset + entity.length:]
                 text = text.strip()
                 break
-    
     return text.strip() if text.strip() else None
 
 # ============================================
@@ -161,7 +134,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❓ Помощь", callback_data="help")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
     if update.effective_chat.type == "private":
         await update.message.reply_text(
             "🤖 *Привет! Я — умный ИИ-помощник с доступом в интернет!*\n\n"
@@ -203,17 +175,13 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return
-    
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    
     result = await search_all_sources(query)
-    
     user_id = update.effective_user.id
     if user_id not in user_histories:
         user_histories[user_id] = []
     user_histories[user_id].append({"role": "user", "content": query})
     user_histories[user_id].append({"role": "assistant", "content": result})
-    
     if len(result) > 4000:
         for i in range(0, len(result), 4000):
             await update.message.reply_text(result[i:i+4000], parse_mode="Markdown")
@@ -241,15 +209,11 @@ async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in user_histories:
         del user_histories[user_id]
-    await update.message.reply_text(
-        "🧹 *История диалога очищена!*",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("🧹 *История диалога очищена!*", parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not should_respond(update):
         return
-    
     query = extract_query(update)
     if not query:
         if update.effective_chat.type != "private":
@@ -259,17 +223,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         return
-    
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    
     result = await search_all_sources(query)
-    
     user_id = update.effective_user.id
     if user_id not in user_histories:
         user_histories[user_id] = []
     user_histories[user_id].append({"role": "user", "content": query})
     user_histories[user_id].append({"role": "assistant", "content": result})
-    
     if len(result) > 4000:
         for i in range(0, len(result), 4000):
             await update.message.reply_text(result[i:i+4000], parse_mode="Markdown")
@@ -279,7 +239,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     if query.data == "help":
         await query.edit_message_text(
             "📖 *Помощь:*\n\n"
@@ -298,7 +257,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Или упомяни меня: `@имя_бота [вопрос]`",
             parse_mode="Markdown"
         )
-    
     elif query.data == "search":
         await query.edit_message_text(
             "🔍 *Поиск в интернете:*\n\n"
@@ -317,15 +275,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ============================================
-# 4. HTTP-СЕРВЕР
+# 4. WEBHOOK И HTTP-СЕРВЕР
 # ============================================
 
 async def health_check(request):
-    """Проверка здоровья для Railway"""
     return web.Response(text="Бот работает! ✅")
 
 async def handle_webhook(request):
-    """Обработка вебхука от Telegram"""
     try:
         data = await request.json()
         update = Update.de_json(data, None)
@@ -334,6 +290,21 @@ async def handle_webhook(request):
     except Exception as e:
         print(f"Webhook error: {e}")
         return web.Response(text="Error", status=500)
+
+async def run_webhook():
+    global application
+    
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    app.router.add_post('/webhook', handle_webhook)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host='0.0.0.0', port=PORT)
+    await site.start()
+    print(f"🌐 HTTP сервер запущен на порту {PORT}")
+    print(f"🔗 Webhook: {WEBHOOK_URL}/webhook")
 
 # ============================================
 # 5. ЗАПУСК
@@ -355,38 +326,25 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    # Если есть WEBHOOK_URL - используем вебхук
+    # Запускаем приложение
+    await application.initialize()
+    await application.start()
+    
     if WEBHOOK_URL:
-        print(f"🔗 Настройка вебхука: {WEBHOOK_URL}/webhook")
-        await application.initialize()
-        await application.start()
+        # Устанавливаем webhook
         await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-        
+        print(f"✅ Webhook установлен: {WEBHOOK_URL}/webhook")
         # Запускаем HTTP сервер
-        app = web.Application()
-        app.router.add_get('/', health_check)
-        app.router.add_get('/health', health_check)
-        app.router.add_post('/webhook', handle_webhook)
-        
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, host='0.0.0.0', port=PORT)
-        await site.start()
-        
-        print(f"🌐 HTTP сервер запущен на порту {PORT}")
-        print("✅ Бот работает через webhook!")
-        
-        # Держим сервер запущенным
-        await asyncio.Event().wait()
+        await run_webhook()
     else:
-        # Используем polling
-        print("📡 Запуск через polling...")
-        await application.initialize()
-        await application.start()
+        # Запускаем polling
         await application.updater.start_polling()
-        
-        print("✅ Бот готов к работе!")
-        await asyncio.Event().wait()
+        print("✅ Бот запущен через polling")
+    
+    print("✅ Бот готов к работе! 💡")
+    
+    # Держим бота запущенным
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
