@@ -13,9 +13,11 @@ from telegram.ext import (
     filters, 
     ContextTypes
 )
+from aiohttp import web
 
 # --- Конфигурация ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+PORT = int(os.environ.get("PORT", 8080))
 
 if not TELEGRAM_TOKEN:
     raise ValueError("Ошибка: переменная TELEGRAM_BOT_TOKEN должна быть установлена!")
@@ -119,7 +121,6 @@ def should_respond(update: Update) -> bool:
         if update.message and update.message.entities:
             for entity in update.message.entities:
                 if entity.type == "mention":
-                    # Проверяем, упомянули ли именно этого бота
                     mention_text = update.message.text[entity.offset:entity.offset + entity.length]
                     bot_username = update.get_bot().username
                     if mention_text.lower() == f"@{bot_username.lower()}":
@@ -145,7 +146,6 @@ def extract_query(update: Update) -> str:
     
     # Если это команда /search
     if text.startswith("/search"):
-        # Убираем команду /search и пробелы
         query = text.replace("/search", "").strip()
         if query:
             return query
@@ -155,16 +155,9 @@ def extract_query(update: Update) -> str:
     if update.message.entities:
         for entity in update.message.entities:
             if entity.type == "mention":
-                # Убираем упоминание из текста
                 text = text[:entity.offset] + text[entity.offset + entity.length:]
                 text = text.strip()
                 break
-    
-    # Если есть reply к боту - убираем reply
-    if update.message.reply_to_message:
-        if update.message.reply_to_message.from_user.id == update.get_bot().id:
-            # Текст без reply
-            pass
     
     return text.strip() if text.strip() else None
 
@@ -179,7 +172,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Приветствие для групп и личных чатов
     if update.effective_chat.type == "private":
         await update.message.reply_text(
             "🤖 *Привет! Я — умный ИИ-помощник с доступом в интернет!*\n\n"
@@ -225,17 +217,14 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
-    # Ищем во всех источниках
     result = await search_all_sources(query)
     
-    # Сохраняем в историю
     user_id = update.effective_user.id
     if user_id not in user_histories:
         user_histories[user_id] = []
     user_histories[user_id].append({"role": "user", "content": query})
     user_histories[user_id].append({"role": "assistant", "content": result})
     
-    # Отправляем результат
     if len(result) > 4000:
         for i in range(0, len(result), 4000):
             await update.message.reply_text(result[i:i+4000], parse_mode="Markdown")
@@ -264,20 +253,16 @@ async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in user_histories:
         del user_histories[user_id]
     await update.message.reply_text(
-        "🧹 *История диалога очищена!*\n\n"
-        "Я забыл всё, о чём мы говорили ранее.",
+        "🧹 *История диалога очищена!*",
         parse_mode="Markdown"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик всех текстовых сообщений"""
     
-    # Проверяем, должен ли бот отвечать
     if not should_respond(update):
-        # Не отвечаем в группах на обычные сообщения
         return
     
-    # Извлекаем текст запроса
     query = extract_query(update)
     if not query:
         if update.effective_chat.type != "private":
@@ -288,20 +273,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
     
-    # Показываем статус "печатает..."
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
-    # Ищем во всех источниках
     result = await search_all_sources(query)
     
-    # Сохраняем в историю
     user_id = update.effective_user.id
     if user_id not in user_histories:
         user_histories[user_id] = []
     user_histories[user_id].append({"role": "user", "content": query})
     user_histories[user_id].append({"role": "assistant", "content": result})
     
-    # Отправляем ответ
     if len(result) > 4000:
         for i in range(0, len(result), 4000):
             await update.message.reply_text(result[i:i+4000], parse_mode="Markdown")
@@ -309,7 +290,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(result, parse_mode="Markdown")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на кнопки"""
     query = update.callback_query
     await query.answer()
     
@@ -345,10 +325,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• `/search ваш вопрос`\n"
             "• `@имя_бота ваш вопрос`\n"
             "• Ответь на моё сообщение\n\n"
-            "📝 *Примеры:*\n"
-            "• `кто такой Эйнштейн`\n"
-            "• `что такое ИИ`\n"
-            "• `история интернета`\n\n"
             "🌐 *Источники:*\n"
             "• Википедия\n"
             "• DuckDuckGo",
@@ -356,15 +332,37 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ============================================
-# 4. ЗАПУСК БОТА
+# 4. HTTP-СЕРВЕР ДЛЯ RAILWAY
 # ============================================
 
-def main():
+async def health_check(request):
+    """Проверка здоровья для Railway"""
+    return web.Response(text="Бот работает!")
+
+async def run_http_server():
+    """Запуск HTTP сервера"""
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host='0.0.0.0', port=PORT)
+    await site.start()
+    print(f"🌐 HTTP сервер запущен на порту {PORT}")
+    # Держим сервер запущенным
+    await asyncio.Event().wait()
+
+# ============================================
+# 5. ЗАПУСК БОТА
+# ============================================
+
+async def run_bot():
+    """Запуск бота"""
     print("🚀 Запуск бота с поиском...")
     print("📚 Источники: Википедия, DuckDuckGo")
     print("💬 Команды: /start, /help, /search, /clear")
     print("👥 Режим групп: отвечает только на /search, упоминания и reply")
-    print("✅ Бот запущен!")
+    print(f"🌐 Порт: {PORT}")
     
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
@@ -375,8 +373,24 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback))
     
+    print("✅ Бот готов к работе!")
     print("💡 Тестируй бота в Telegram!")
-    application.run_polling()
+    
+    # Запускаем бота с webhook или polling
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    # Держим бота запущенным
+    await asyncio.Event().wait()
+
+async def main():
+    """Главная функция"""
+    # Запускаем HTTP сервер и бота параллельно
+    await asyncio.gather(
+        run_http_server(),
+        run_bot()
+    )
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
